@@ -1,0 +1,129 @@
+Whatsapp and mobile users headache
+
+The best solution is to use a single, unified `users`
+  table that can accommodate both types of users. Here’s a
+  detailed breakdown of the recommended approach.
+
+  The Strategy: A Unified User Model
+
+
+  The core idea is that a "user" is a central concept in
+  your application, but a user can have different ways of
+  authenticating or identifying themselves (via phone for
+  WhatsApp, or email/password for the mobile app).
+
+  1. Recommended Table Structure
+
+  You will have two main tables related to users:
+
+
+  A. `auth.users` (Built-in Supabase Table)
+   * This is a private, secure table managed by Supabase.
+   * It stores sensitive authentication data (like hashed
+     passwords, email, etc.).
+   * Users who sign up through your mobile app will have a
+     record here.
+   * You should not modify this table's structure directly.
+
+
+  B. `public.users` (Your Custom Table)
+   * This is the table you will create and control. It will
+     hold all users from both channels.
+   * It will store public profile information that is safe
+     to access from your application.
+   * Recommended Columns:
+       * id (uuid, Primary Key): A unique ID for every
+         user.
+       * auth_id (uuid, Foreign Key to auth.users.id,
+         nullable): This is the crucial link. For mobile
+         app users, this will contain their ID from
+         auth.users. For WhatsApp-only users, this will be
+         NULL.
+       * phone_number (text, unique): The primary
+         identifier for WhatsApp users.
+       * email (text, nullable, unique): The primary
+         identifier for mobile app users.
+       * full_name (text, nullable): Other profile data.
+       * created_at (timestamp): When the user record was
+         created.
+
+  2. Workflow for Each Channel
+
+  Here’s how you handle each user type:
+
+  A. Mobile App Workflow (Full Authentication)
+
+
+   1. Sign Up: A user signs up on the mobile app with an
+      email and password. You call the createUser method we
+      discussed, which uses supabase.auth.signUp().
+   2. `auth.users` Record Created: Supabase automatically
+      creates a new record in the auth.users table.
+   3. Create Public Profile (The Magic Step): You need to
+      automatically create a corresponding profile in your
+      public.users table. The best way to do this is with a
+      database trigger.
+       * You create a function in your Supabase SQL editor
+         that runs every time a new user is added to
+         auth.users.
+       * This function copies the id and email from the new
+         auth.users record into a new row in public.users,
+         setting the auth_id field.
+       * This ensures every authenticated user has a public
+         profile automatically.
+
+
+  B. WhatsApp Workflow (Phone-Only Authentication)
+
+  This is where your backend logic comes in. You'll
+  implement a "get-or-create" flow.
+
+
+   1. First Message: A new user sends a message to your
+      WhatsApp number.
+   2. Webhook Received: Your /twilio/webhook endpoint
+      receives the request, which includes the user's phone
+      number in body.From.
+   3. Check for Existing User: In your service, you take the
+      phone number and query your public.users table:
+
+
+   1     // In a new method in AuthService, e.g.,
+     handleWhatsAppUser(phoneNumber)
+   2     const { data: existingUser, error } =
+     await this.client
+   3       .from('users')
+   4       .select('*')
+   5       .eq('phone_number', phoneNumber)
+   6       .single(); // .single() gets one record
+     or null
+
+   4. Logic:
+       * If `existingUser` is found: Great! You know who
+         they are. You can proceed with your app logic
+         using their user record.
+       * If `existingUser` is `null`: This is a brand new
+         user. You create a record for them in your
+         public.users table:
+
+   1       const { data: newUser, error } = await
+     this.client
+   2         .from('users')
+   3         .insert([{ phone_number: phoneNumber
+     }])
+   4         .select()
+   5         .single();
+
+        This new user will have a phone_number but their
+  auth_id and email will be NULL.
+
+  3. Linking Accounts
+
+
+  This model makes it easy to link accounts later. If a
+  WhatsApp user downloads the mobile app, you can have a
+  screen in your app that says "Already a user? Verify
+  your phone number." When they sign up with an
+  email/password and verify their phone number, you can
+  find their existing record in public.users and update
+  the auth_id field, merging the two identities.
