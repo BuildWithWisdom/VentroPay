@@ -1,67 +1,187 @@
 import { Injectable } from '@nestjs/common';
-// import { GoogleGenerativeAI } from '@google/generative-ai';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { ConfigService } from '@nestjs/config';
+import { allTools } from './ai.tools';
+import { AuthService } from '../auth/auth.service';
+import { FlutterwaveService } from '../flutterwave/flutterwave.service';
 
-const registerUserEmailFunctionDeclaration = {
-  name: 'registerUserEmail',
-  description: 'Takes the user email and registers the user.',
-  parameters: {
-    type: Type.OBJECT,
-    properties: {
-      email: {
-        type: Type.STRING,
-        description: 'The email address of the user. e.g. user@gmail.com',
-      },
-    },
-    required: ['email'],
-  },
-};
 @Injectable()
 export class AiService {
   private genAI: GoogleGenAI;
-  private readonly tools: any[];
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly authService: AuthService,
+    private readonly flutterwaveService: FlutterwaveService,
+  ) {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY');
     if (!apiKey) {
       throw new Error('GEMINI_API_KEY is not set in the .env file');
     }
-    this.genAI = new GoogleGenAI({apiKey: apiKey});
+    this.genAI = new GoogleGenAI({ apiKey: apiKey });
   }
 
-  async handleEmail(message: string) {
-    // First request to get the function call
+  async processMessage(message: string, user: any, history: any[]) {
+    const tools = [{ functionDeclarations: allTools }];
+
+    const systemPrompt =
+      'You are a helpful and friendly assistant for VentroPay. Your primary goal is to guide new users through the onboarding process. Use the `getOnboardingStatus` tool to check what step the user needs to complete next. Be proactive and lead the conversation.';
+
+    // Workaround for older library versions: Prepend system prompt to the first user message
+    const firstMessage = history.length === 0 ? `${systemPrompt}\n\n${message}` : message;
+
+    const conversation = [
+      ...history,
+      { role: 'user', parts: [{ text: firstMessage }] },
+    ];
+
     const initialResponse = await this.genAI.models.generateContent({
       model: 'gemini-2.5-flash',
-      contents: message,
+      contents: conversation,
       config: {
-        tools: [{ functionDeclarations: [registerUserEmailFunctionDeclaration] }],
+        tools: tools,
       },
     });
 
-    if (initialResponse.functionCalls && initialResponse.functionCalls.length > 0) {
+    if (
+      initialResponse.functionCalls &&
+      initialResponse.functionCalls.length > 0
+    ) {
       const functionCall = initialResponse.functionCalls[0];
       console.log(`Function to call: ${functionCall.name}`);
       console.log(`Arguments: ${JSON.stringify(functionCall.args)}`);
 
-      // Simulate executing the function and getting a result
-      // In a real scenario, you would save the email to the database here
       if (!functionCall.args) {
         console.error('Function call arguments are missing.');
-        return;
+        return 'An internal error occurred. Missing arguments.';
       }
 
-      const functionExecutionResult = {
-        success: true,
-        email: functionCall.args.email,
-      };
+      let functionExecutionResult: any;
+
+      // Route the function call to the appropriate logic
+      switch (functionCall.name) {
+        case 'getOnboardingStatus': {
+          console.log('Executing getOnboardingStatus logic...');
+          if (!user.email) {
+            functionExecutionResult = { status: 'NEEDS_EMAIL' };
+          } else if (!user.email_verified) {
+            functionExecutionResult = { status: 'NEEDS_VERIFICATION' };
+          } else if (!user.full_name) {
+            functionExecutionResult = { status: 'NEEDS_FULL_NAME' };
+          } else {
+            functionExecutionResult = { status: 'ONBOARDED' };
+          }
+          break;
+        }
+
+        case 'registerEmail': {
+          console.log('Executing registerEmail logic...');
+          try {
+            const { email } = functionCall.args as { email: string };
+            await this.authService.updateUserEmail(user.id, email);
+            await this.authService.client.auth.signInWithOtp({
+              email: email,
+              options: {
+                shouldCreateUser: true,
+              },
+            });
+            functionExecutionResult = { success: true, email: email };
+          } catch (error) {
+            console.error('Error in registerEmail:', error);
+            functionExecutionResult = { success: false, error: error.message };
+          }
+          break;
+        }
+
+        case 'verifyEmailOtp': {
+          console.log('Executing verifyEmailOtp logic...');
+          try {
+            const { otp } = functionCall.args as { otp: string };
+            const { data, error } = await this.authService.client.auth.verifyOtp({
+              email: user.email,
+              token: otp,
+              type: 'email' as 'email',
+            });
+            if (error) throw error;
+            await this.authService.updateUserEmailVerified(user.id, true);
+            functionExecutionResult = { success: true };
+          } catch (error) {
+            console.error('Error in verifyEmailOtp:', error);
+            functionExecutionResult = { success: false, error: error.message };
+          }
+          break;
+        }
+
+        case 'registerFullNameAndCreateAccounts': {
+          console.log('Executing registerFullNameAndCreateAccounts logic...');
+          try {
+            const { firstName, lastName } = functionCall.args as {
+              firstName: string;
+              lastName: string;
+            };
+            const structuredFullName = { first_name: firstName, last_name: lastName };
+            await this.authService.updateUserFullName(user.id, structuredFullName);
+
+            const flutterwavePayload = {
+              email: user.email,
+              name: { first: firstName, middle: 'Empty', last: lastName },
+              phone: {
+                country_code: user.phone_number.code.slice(1),
+                number: user.phone_number.number,
+              },
+            };
+            const flutterwaveCustomer = await this.flutterwaveService.createCustomer(flutterwavePayload);
+            await this.authService.updateUserFlutterwaveCustomerId(user.id, flutterwaveCustomer.data.id);
+
+            const dynamicAccountPayload = {
+              reference: `vp-${user.id.substring(0, 18)}-${Date.now()}`,
+              customer_id: flutterwaveCustomer.data.id,
+              expiry: 31536000,
+              amount: 20000,
+              currency: 'NGN',
+              account_type: 'dynamic',
+              narration: `${firstName} ${lastName} VentroPay Account`,
+            };
+            const virtualAccount = await this.flutterwaveService.createDynamicVirtualAccount(dynamicAccountPayload);
+            await this.authService.updateUserVirtualAccountDetails(
+              user.id,
+              virtualAccount.data.account_number,
+              virtualAccount.data.amount
+            );
+
+            functionExecutionResult = {
+              success: true,
+              accountNumber: virtualAccount.data.account_number,
+              bankName: virtualAccount.data.account_bank_name,
+            };
+          } catch (error) {
+            console.error('Error in registerFullNameAndCreateAccounts:', error);
+            functionExecutionResult = { success: false, error: error.message };
+          }
+          break;
+        }
+
+        default: {
+          console.error(`Unknown function call: ${functionCall.name}`);
+          functionExecutionResult = { success: false, error: 'Unknown function' };
+          break;
+        }
+      }
+
+      // --- Graceful Error Handling ---
+      if (functionExecutionResult.success === false) {
+        console.error(
+          'A function call failed. Bypassing AI for response.',
+          functionExecutionResult.error,
+        );
+        return "I'm sorry, an error occurred on our end. Please try again in a moment. If the problem continues, please contact support.";
+      }
 
       // Second request, sending the function's result back to the model
       const finalResponse = await this.genAI.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: [
-          { role: 'user', parts: [{ text: message }] },
+          ...conversation,
           { role: 'model', parts: [{ functionCall: functionCall }] },
           {
             role: 'function',
@@ -76,16 +196,17 @@ export class AiService {
           },
         ],
         config: {
-          tools: [{ functionDeclarations: [registerUserEmailFunctionDeclaration] }],
+          tools: tools,
         },
       });
 
       // Log the final natural language response
       console.log('Final Response from AI:', finalResponse.text);
+      return finalResponse.text; // Return the text to the controller
     } else {
-      // If no function call was made, just log the text response
+      // If no function call was made, just log and return the text response
       console.log('Final Response from AI:', initialResponse.text);
+      return initialResponse.text; // Return the text to the controller
     }
   }
-
 }

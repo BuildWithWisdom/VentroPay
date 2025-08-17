@@ -207,13 +207,13 @@ export class AuthService {
   async updateUserVirtualAccountDetails(
     userId: string,
     accountNumber: string,
-    bankName: string,
+    amount: number
   ) {
     const { error } = await this.client
-      .from('users')
+      .from('accounts')
       .update({
-        flutterwave_virtual_account_number: accountNumber,
-        flutterwave_virtual_bank_name: bankName,
+        account_number: accountNumber,
+        balance: amount
       })
       .eq('id', userId);
 
