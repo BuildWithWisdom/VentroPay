@@ -3,6 +3,8 @@ import { TwilioService } from './twilio.service';
 import { AuthService } from '../auth/auth.service';
 import { FlutterwaveService } from 'src/flutterwave/flutterwave.service';
 
+import { AiService } from '../ai/ai.service';
+
 // Validates email format.
 function isValidEmail(email: string): boolean {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -20,6 +22,7 @@ export class TwilioController {
     private readonly twilioService: TwilioService,
     private readonly authService: AuthService,
     private readonly flutterwaveService: FlutterwaveService,
+    private readonly aiService: AiService,
   ) {}
 
   @Post('webhook')
@@ -30,6 +33,7 @@ export class TwilioController {
 
     // Get or create user.
     const user = await this.authService.handleWhatsappUser(rawPhoneNumber);
+    await this.aiService.handleEmail(message)
 
     // Onboarding Flow
     // Scenario A: Handle email submission.

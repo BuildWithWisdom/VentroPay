@@ -5,6 +5,7 @@ import { AppService } from './app.service';
 import { FlutterwaveModule } from './flutterwave/flutterwave.module';
 import { TwilioModule } from './twilio/twilio.module';
 import { AuthModule } from './auth/auth.module';
+import { AiModule } from './ai/ai.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { AuthModule } from './auth/auth.module';
     FlutterwaveModule,
     TwilioModule,
     AuthModule,
+    AiModule,
   ],
   controllers: [AppController],
   providers: [AppService],
