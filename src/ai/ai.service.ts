@@ -21,20 +21,31 @@ export class AiService {
     this.genAI = new GoogleGenAI({ apiKey: apiKey });
   }
 
+  /**
+   * Processes an incoming message using the AI model.
+   * It manages conversation history, function calling, and error handling.
+   * @param message The content of the user's message.
+   * @param user The user object from the database.
+   * @param history The previous conversation history.
+   * @returns A natural language response from the AI.
+   */
   async processMessage(message: string, user: any, history: any[]) {
     const tools = [{ functionDeclarations: allTools }];
 
+    // Core instructions for the AI model.
     const systemPrompt =
       'You are a helpful and friendly assistant for VentroPay. Your primary goal is to guide new users through the onboarding process. Use the `getOnboardingStatus` tool to check what step the user needs to complete next. Be proactive and lead the conversation.';
 
-    // Workaround for older library versions: Prepend system prompt to the first user message
-    const firstMessage = history.length === 0 ? `${systemPrompt}\n\n${message}` : message;
+    // Workaround for older library versions: Prepend system prompt to the first user message.
+    const firstMessage =
+      history.length === 0 ? `${systemPrompt}\n\n${message}` : message;
 
     const conversation = [
       ...history,
       { role: 'user', parts: [{ text: firstMessage }] },
     ];
 
+    // First API call: Get the AI's response, which may include a function call.
     const initialResponse = await this.genAI.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: conversation,
@@ -43,6 +54,7 @@ export class AiService {
       },
     });
 
+    // If the model requests a function call, execute it.
     if (
       initialResponse.functionCalls &&
       initialResponse.functionCalls.length > 0
@@ -58,7 +70,7 @@ export class AiService {
 
       let functionExecutionResult: any;
 
-      // Route the function call to the appropriate logic
+      // Route the function call to the appropriate internal logic.
       switch (functionCall.name) {
         case 'getOnboardingStatus': {
           console.log('Executing getOnboardingStatus logic...');
@@ -97,12 +109,11 @@ export class AiService {
           console.log('Executing verifyEmailOtp logic...');
           try {
             const { otp } = functionCall.args as { otp: string };
-            const { data, error } = await this.authService.client.auth.verifyOtp({
+            await this.authService.client.auth.verifyOtp({
               email: user.email,
               token: otp,
               type: 'email' as 'email',
             });
-            if (error) throw error;
             await this.authService.updateUserEmailVerified(user.id, true);
             functionExecutionResult = { success: true };
           } catch (error) {
@@ -146,7 +157,7 @@ export class AiService {
             await this.authService.updateUserVirtualAccountDetails(
               user.id,
               virtualAccount.data.account_number,
-              virtualAccount.data.amount
+              virtualAccount.data.account_bank_name, // Bug fix: was passing amount
             );
 
             functionExecutionResult = {
@@ -168,7 +179,7 @@ export class AiService {
         }
       }
 
-      // --- Graceful Error Handling ---
+      // If a function call fails, bypass the AI and return a static error message.
       if (functionExecutionResult.success === false) {
         console.error(
           'A function call failed. Bypassing AI for response.',
@@ -177,7 +188,7 @@ export class AiService {
         return "I'm sorry, an error occurred on our end. Please try again in a moment. If the problem continues, please contact support.";
       }
 
-      // Second request, sending the function's result back to the model
+      // Second API call: Send the function result back to the model for a natural language response.
       const finalResponse = await this.genAI.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: [
@@ -200,13 +211,10 @@ export class AiService {
         },
       });
 
-      // Log the final natural language response
-      console.log('Final Response from AI:', finalResponse.text);
-      return finalResponse.text; // Return the text to the controller
+      return finalResponse.text; // Return the final text to the controller
     } else {
-      // If no function call was made, just log and return the text response
-      console.log('Final Response from AI:', initialResponse.text);
-      return initialResponse.text; // Return the text to the controller
+      // If no function call was made, just return the AI's text response.
+      return initialResponse.text;
     }
   }
 }

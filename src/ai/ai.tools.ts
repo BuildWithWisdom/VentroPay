@@ -1,3 +1,8 @@
+/**
+ * @fileoverview This file defines the function calling tools available to the AI model.
+ * Each tool represents a specific capability or action the AI can request to be executed.
+ */
+
 import { Type } from '@google/genai';
 
 // Tool to check the user's current onboarding status
@@ -63,6 +68,7 @@ const registerFullNameAndCreateAccountsDeclaration = {
   },
 };
 
+// The collection of all tools made available to the AI model.
 export const allTools = [
   getOnboardingStatusDeclaration,
   registerEmailDeclaration,
